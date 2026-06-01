@@ -5,11 +5,8 @@ import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 
 const app = express();
-
-// Increase body size limit to handle 4 base64-encoded documents
 app.use(express.json({ limit: '50mb' }));
 
-// Document fields that contain base64 file content sent by n8n
 const DOCUMENT_FIELDS = [
   'doc_bulletin_inscription',
   'doc_bulletin_salaire',
@@ -17,13 +14,35 @@ const DOCUMENT_FIELDS = [
   'doc_rib',
 ];
 
-// Health check endpoint
+// Middleware — validate Authorization header on every request
+function requireAuth(req, res, next) {
+  const authHeader = req.headers['authorization'];
+
+  if (!authHeader || authHeader !== `Bearer ${process.env.API_SECRET}`) {
+    console.warn('⚠️  Unauthorized request rejected');
+    return res.status(401).json({ success: false, error: 'Unauthorized' });
+  }
+
+  next();
+}
+
+// Download a file from a URL and save it to a local path
+async function downloadFile(url, localPath) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to download ${url}: ${response.status} ${response.statusText}`);
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  writeFileSync(localPath, buffer);
+}
+
+// Health check endpoint — no auth required
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'playwright-automation' });
 });
 
-// Main endpoint — receives payload from n8n and runs main.js
-app.post('/run', async (req, res) => {
+// Main endpoint — requires Authorization header
+app.post('/run', requireAuth, async (req, res) => {
   const payload = { ...req.body };
   console.log('📦 Payload received');
 
@@ -41,18 +60,22 @@ app.post('/run', async (req, res) => {
     });
   }
 
-  // Create a unique temp folder for this run in /tmp (RAM — not disk)
+  // Create unique temp folder in /tmp (RAM)
   const runId = Date.now();
   const tempDir = `/tmp/playwright-run-${runId}`;
   mkdirSync(tempDir, { recursive: true });
   console.log(`📁 Temp folder created: ${tempDir}`);
 
   try {
-    // Decode each base64 document and save to temp folder
+    // Download each document from its URL and save to temp folder
     for (const field of DOCUMENT_FIELDS) {
-      const { filename, content } = payload[field];
+      const url = payload[field];
+      const urlPath = new URL(url).pathname;
+      const filename = urlPath.split('/').pop() || `${field}.pdf`;
       const localPath = join(tempDir, filename);
-      writeFileSync(localPath, Buffer.from(content, 'base64'));
+
+      console.log(`⬇️  Downloading: ${field}`);
+      await downloadFile(url, localPath);
       payload[field] = localPath;
       console.log(`💾 Saved to /tmp: ${filename}`);
     }
@@ -66,7 +89,6 @@ app.post('/run', async (req, res) => {
 
     exec('node main.js', { env, timeout: 600000, cwd: '/var/www/automatisation-portails-rpa' }, (err, stdout, stderr) => {
 
-      // Always delete temp files after run
       if (existsSync(tempDir)) {
         rmSync(tempDir, { recursive: true });
         console.log(`🗑️  Temp folder deleted: ${tempDir}`);
