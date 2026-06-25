@@ -1,9 +1,13 @@
 // steps/3_selectionner_apprenant.js
 import { getPayload } from '../helpers/payload.js';
-import { humanClick, readingPause } from '../helpers/human.js';
+import { humanClick, readingPause, normalizeCivility } from '../helpers/human.js';
 
 export async function stepSelectionnerApprenant(page) {
   const payload = getPayload();
+
+  // Normalize civility — payload may send short codes like "mme" instead of "Madame"
+  const civility = normalizeCivility(payload['3_civility']);
+
   console.log('▶️  Step 3: Sélection apprenant:', payload['3_first_name'], payload['3_last_name']);
 
   // Open the menu
@@ -16,7 +20,7 @@ export async function stepSelectionnerApprenant(page) {
   await readingPause(page);
 
   // Select the apprenant by name from payload
-  await humanClick(page, page.getByRole('link', { name: `Voir ${payload['3_civility']} ${payload['3_first_name']} ${payload['3_last_name']}` }));
+  await humanClick(page, page.getByRole('link', { name: `Voir ${civility} ${payload['3_first_name']} ${payload['3_last_name']}` }));
   await page.waitForLoadState('networkidle');
 
   console.log('✅ Step 3 complete');

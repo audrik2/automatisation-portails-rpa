@@ -61,3 +61,16 @@ export async function humanClick(page, locator) {
 export async function readingPause(page) {
   await randomDelay(page, 800, 2000);
 }
+
+/**
+ * Maps short civility codes from payload to full French display values
+ */
+export function normalizeCivility(value) {
+  const map = {
+    'mme': 'Madame',
+    'm': 'Monsieur',
+    'mr': 'Monsieur',
+    'mlle': 'Mademoiselle',
+  };
+  return map[value?.toLowerCase()] || value;
+}

@@ -1,4 +1,5 @@
 // server.js
+import 'dotenv/config';
 import express from 'express';
 import { exec } from 'child_process';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
@@ -10,15 +11,14 @@ app.use(express.json({ limit: '50mb' }));
 // Required fields and document fields, per sync_type
 const REQUIRED_FIELDS_BY_SYNC_TYPE = {
   inscrire_apprenant: [
-    '2_num_action', '3_branche', '3_first_name', '3_last_name',
-    '3a_birth_year', '3b_passeport', '4b_last_name', '4b_first_name', '4c_urssaf',
+    'sync_type', '2_num_action', '3_branche', '3_first_name', '3_last_name', '3a_birth_year',
   ],
   documents_inscription: [
-    '2_num_action', '3_first_name', '3_last_name',
+    'sync_type', '2_num_action', '3_civility', '3_first_name', '3_last_name',
     'doc_bulletin_inscription', 'doc_bulletin_salaire', 'doc_piece_identite', 'doc_rib',
   ],
   documents_facturation: [
-    '2_num_action', '3_first_name', '3_last_name',
+    'sync_type', '2_num_action', '3_civility', '3_first_name', '3_last_name',
     '4_doc_bilan', '4_doc_emargement',
   ],
 };

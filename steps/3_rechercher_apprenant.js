@@ -11,6 +11,10 @@ async function verifierRefusInscription(page) {
 
 export async function stepRechercherApprenantNom(page) {
   const payload = getPayload();
+
+  // Normalize branche to uppercase — payload may send lowercase (e.g. "spe" instead of "SPE")
+  payload['3_branche'] = payload['3_branche']?.toUpperCase();
+
   console.log('▶️  Step 3: Recherche apprenant par nom -', payload['3_last_name'], payload['3_first_name'], '| Année naissance:', payload['3a_birth_year']);
 
   // Open the action menu and navigate to Apprenants
