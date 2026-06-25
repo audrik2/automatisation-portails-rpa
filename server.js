@@ -7,12 +7,27 @@ import { join } from 'path';
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
-const DOCUMENT_FIELDS = [
-  'doc_bulletin_inscription',
-  'doc_bulletin_salaire',
-  'doc_piece_identite',
-  'doc_rib',
-];
+// Required fields and document fields, per sync_type
+const REQUIRED_FIELDS_BY_SYNC_TYPE = {
+  inscrire_apprenant: [
+    '2_num_action', '3_branche', '3_first_name', '3_last_name',
+    '3a_birth_year', '3b_passeport', '4b_last_name', '4b_first_name', '4c_urssaf',
+  ],
+  documents_inscription: [
+    '2_num_action', '3_first_name', '3_last_name',
+    'doc_bulletin_inscription', 'doc_bulletin_salaire', 'doc_piece_identite', 'doc_rib',
+  ],
+  documents_facturation: [
+    '2_num_action', '3_first_name', '3_last_name',
+    '4_doc_bilan', '4_doc_emargement',
+  ],
+};
+
+const DOCUMENT_FIELDS_BY_SYNC_TYPE = {
+  inscrire_apprenant: [],
+  documents_inscription: ['doc_bulletin_inscription', 'doc_bulletin_salaire', 'doc_piece_identite', 'doc_rib'],
+  documents_facturation: ['4_doc_bilan', '4_doc_emargement'],
+};
 
 // Middleware — validate Authorization header on every request
 function requireAuth(req, res, next) {
@@ -44,19 +59,26 @@ app.get('/health', (req, res) => {
 // Main endpoint — requires Authorization header
 app.post('/run', requireAuth, async (req, res) => {
   const payload = { ...req.body };
-  console.log('📦 Payload received');
+  const syncType = payload['sync_type'];
+  console.log('📦 Payload received — sync_type:', syncType);
 
-  // Validate required fields
-  const requiredFields = [
-    '2_num_action', '3a_branche', '3a_passeport',
-    ...DOCUMENT_FIELDS,
-  ];
+  // Validate sync_type is known
+  const requiredFields = REQUIRED_FIELDS_BY_SYNC_TYPE[syncType];
+  const documentFields = DOCUMENT_FIELDS_BY_SYNC_TYPE[syncType];
 
+  if (!requiredFields) {
+    return res.status(400).json({
+      success: false,
+      error: `Unknown sync_type: ${syncType}`,
+    });
+  }
+
+  // Validate required fields for this sync_type
   const missingFields = requiredFields.filter(f => !payload[f]);
   if (missingFields.length > 0) {
     return res.status(400).json({
       success: false,
-      error: `Missing required fields: ${missingFields.join(', ')}`,
+      error: `Missing required fields for ${syncType}: ${missingFields.join(', ')}`,
     });
   }
 
@@ -67,8 +89,8 @@ app.post('/run', requireAuth, async (req, res) => {
   console.log(`📁 Temp folder created: ${tempDir}`);
 
   try {
-    // Download each document from its URL and save to temp folder
-    for (const field of DOCUMENT_FIELDS) {
+    // Download documents relevant to this sync_type only
+    for (const field of documentFields) {
       const url = payload[field];
       const urlPath = new URL(url).pathname;
       const filename = urlPath.split('/').pop() || `${field}.pdf`;

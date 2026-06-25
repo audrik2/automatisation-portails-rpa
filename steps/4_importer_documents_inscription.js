@@ -1,4 +1,4 @@
-// steps/6_importer_documents.js
+// steps/4_importer_documents_inscription.js
 import { getPayload } from '../helpers/payload.js';
 import { humanClick, readingPause, randomDelay } from '../helpers/human.js';
 
@@ -24,20 +24,26 @@ async function importerDocument(page, cheminFichier, nomFichier, label, isLast =
   await page.getByLabel('NOM DU FICHIER').fill(nomFichier);
   await readingPause(page);
 
-  // Click the drag-and-drop zone to trigger the file chooser
-  const [fileChooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.locator('div').filter({
-      hasText: /^Glissez-déposez un fichier ici, ou cliquez pour en sélectionner un$/
-    }).first().click(),
-  ]);
+  // Try hidden input first — most reliable approach
+  const hiddenInput = page.locator('input[type="file"]').first();
+  const hasHiddenInput = await hiddenInput.count() > 0;
 
-  // Upload the file
-  await fileChooser.setFiles(cheminFichier);
+  if (hasHiddenInput) {
+    await hiddenInput.setInputFiles(cheminFichier);
+  } else {
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.locator('div').filter({
+        hasText: /^Glissez-déposez un fichier ici, ou cliquez pour en sélectionner un$/
+      }).first().click(),
+    ]);
+    await fileChooser.setFiles(cheminFichier);
+  }
+
   await readingPause(page);
 
   // Click Créer to confirm
-  await humanClick(page, page.getByRole('button', { name: 'Créer' }));
+  await humanClick(page, page.getByRole('button', { name: 'Créer', exact: true }));
 
   // Wait for upload to complete
   console.log(`⏳ Attente traitement upload: ${label}...`);
@@ -45,22 +51,24 @@ async function importerDocument(page, cheminFichier, nomFichier, label, isLast =
   await verifierErreurPage(page);
 
   if (!isLast) {
-    // Wait for the next import button to be visible before continuing
-    // This is more reliable than a fixed timer
     console.log(`⏳ Attente disponibilité prochain bouton...`);
     await page.getByRole('button', { name: '+ Importer un document' })
       .first()
       .waitFor({ state: 'visible', timeout: 60000 });
-    // Small natural pause after button appears
     await randomDelay(page, 1500, 3000);
   }
 
   console.log(`✅ ${label} importé`);
 }
 
-export async function stepImporterDocuments(page) {
+export async function stepImporterDocumentsInscription(page) {
   const payload = getPayload();
-  console.log('▶️  Step 6: Import des documents...');
+  console.log('▶️  Step 4: Import des documents...');
+
+  // Navigate to Documents section first
+  await humanClick(page, page.getByText('DOCUMENTS', { exact: true }));
+  await page.waitForLoadState('networkidle');
+  await readingPause(page);
 
   await importerDocument(
     page,
@@ -88,8 +96,8 @@ export async function stepImporterDocuments(page) {
     payload['doc_rib'],
     'RIB salarié',
     'RIB salarié',
-    true  // ← last document, skip waiting for next button
+    true
   );
 
-  console.log('✅ Step 6 complete — 4 documents importés');
+  console.log('✅ Step 4 complete — 4 documents importés');
 }

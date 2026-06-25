@@ -4,11 +4,7 @@ import { existsSync } from 'fs';
 import { config } from './config.js';
 import { getPayload } from './helpers/payload.js';
 import { login } from './steps/1_connection.js';
-import { stepFormation } from './steps/2_formation.js';
-import { stepRechercherApprenant } from './steps/3a_rechercher_apprenant.js';
-import { stepRemboursement } from './steps/5_remboursement.js';
-import { stepImporterDocuments } from './steps/6_importer_documents.js';
-// 3b and 3c are called automatically by 3a — no import needed here
+import { runSteps } from './helpers/router.js';
 
 const payload = getPayload();
 
@@ -25,7 +21,6 @@ const browser = await chromium.launch({
   ],
 });
 
-// Read the real Chromium version and strip "Headless" from the user agent
 const tempPage = await browser.newPage();
 const rawUserAgent = await tempPage.evaluate(() => navigator.userAgent);
 await tempPage.close();
@@ -47,7 +42,6 @@ const context = await browser.newContext({
 const page = await context.newPage();
 page.setDefaultTimeout(config.timeout);
 
-// Mask automation fingerprint on every page load
 await page.addInitScript(() => {
   Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
@@ -55,7 +49,10 @@ await page.addInitScript(() => {
 });
 
 try {
-  // Reuse session if still valid, otherwise log in fresh
+  if (!payload['sync_type']) {
+    throw new Error('Missing sync_type in payload. Cannot determine which steps to run.');
+  }
+
   await page.goto(config.baseUrl, { waitUntil: 'networkidle' });
   const isLoggedIn = await page.getByRole('button', { name: 'Oceane' }).isVisible()
     .catch(() => false);
@@ -68,10 +65,7 @@ try {
     console.log('♻️  Session réutilisée — login ignoré');
   }
 
-  await stepFormation(page);
-  await stepRechercherApprenant(page);
-  await stepRemboursement(page);
-  await stepImporterDocuments(page);
+  await runSteps(page, payload['sync_type']);
   console.log('✅ All steps passed');
 
 } catch (err) {
