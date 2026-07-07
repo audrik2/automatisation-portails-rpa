@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 import { config } from './config.js';
 import { getPayload } from './helpers/payload.js';
 import { login } from './steps/1_connection.js';
-import { runSteps } from './helpers/router.js';
+import { runSteps, logStepResult } from './helpers/router.js';
 
 const payload = getPayload();
 
@@ -48,6 +48,18 @@ await page.addInitScript(() => {
   Object.defineProperty(navigator, 'languages', { get: () => ['fr-FR', 'fr'] });
 });
 
+// Wrap each step — log predefined French message on success or failure
+async function runStep(name, fn) {
+  try {
+    await fn();
+    logStepResult(name, 'success');
+    return true;
+  } catch (err) {
+    logStepResult(name, 'error');
+    return false;
+  }
+}
+
 try {
   if (!payload['sync_type']) {
     throw new Error('Missing sync_type in payload. Cannot determine which steps to run.');
@@ -58,15 +70,16 @@ try {
     .catch(() => false);
 
   if (!isLoggedIn) {
-    await login(page);
+    const loginOk = await runStep('1_connection.js', () => login(page));
+    if (!loginOk) {
+      process.exit(1);
+    }
     await context.storageState({ path: './session.json' });
-    console.log('💾 Session saved');
   } else {
-    console.log('♻️  Session réutilisée — login ignoré');
+    logStepResult('1_connection.js', 'success', 'Succès : session réutilisée');
   }
 
-  await runSteps(page, payload['sync_type']);
-  console.log('✅ All steps passed');
+  await runSteps(page, payload['sync_type'], runStep);
 
 } catch (err) {
   try {

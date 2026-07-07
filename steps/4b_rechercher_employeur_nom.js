@@ -2,6 +2,7 @@
 import { getPayload } from '../helpers/payload.js';
 import { humanClick, readingPause } from '../helpers/human.js';
 import { stepRechercherEmployeurUrssaf } from './4c_rechercher_employeur_urssaf.js';
+import { logStepResult } from '../helpers/router.js';
 
 export async function stepRechercherEmployeurNom(page) {
   const payload = getPayload();
@@ -21,11 +22,9 @@ export async function stepRechercherEmployeurNom(page) {
 
   await humanClick(page, page.getByLabel('Rechercher un employeur').getByRole('button', { name: 'Rechercher' }));
 
-  // Wait for search to complete
   await page.waitForLoadState('networkidle');
   await readingPause(page);
 
-  // Check whether a result was found or not
   const selectBtn = page.getByRole('button', { name: 'Sélectionner' });
   const noResults = page.getByText('Aucun résultat à afficher');
 
@@ -35,16 +34,22 @@ export async function stepRechercherEmployeurNom(page) {
   ]);
 
   if (outcome === 'found') {
+    // Employeur found by name
     console.log('✅ Employeur trouvé par nom, sélection en cours...');
     await humanClick(page, selectBtn);
     await humanClick(page, page.getByRole('button', { name: 'Continuer' }));
     await page.waitForLoadState('networkidle');
-
+    logStepResult('4b_rechercher_employeur_nom.js', 'success');
     console.log('✅ Step 4b complete');
+    return true; // signal success to 4a
 
   } else {
+    // Not found by name — log 4b error and try 4c (URSSAF)
     console.log('⚠️  Aucun employeur trouvé par nom pour:', payload['4b_last_name'], payload['4b_first_name']);
-    console.log('▶️  Tentative de recherche par URSSAF...');
-    await stepRechercherEmployeurUrssaf(page);
+    logStepResult('4b_rechercher_employeur_nom.js', 'error');
+    console.log('▶️  Tentative de recherche par URSSAF (4c)...');
+
+    const urssafFound = await stepRechercherEmployeurUrssaf(page);
+    return urssafFound; // propagate 4c result back to 4a
   }
 }

@@ -1,12 +1,13 @@
 // steps/4c_rechercher_employeur_urssaf.js
 import { getPayload } from '../helpers/payload.js';
 import { humanClick, readingPause } from '../helpers/human.js';
+import { logStepResult } from '../helpers/router.js';
 
 export async function stepRechercherEmployeurUrssaf(page) {
   const payload = getPayload();
   console.log('▶️  Step 4c: Recherche employeur par URSSAF -', payload['4c_urssaf']);
 
-  // Switch to URSSAF tab — button shows "+" when inactive, "-" when active
+  // Switch to URSSAF tab — button shows "+" when inactive
   await humanClick(page, page.getByRole('button', { name: '+ Recherche par N°Urssaf' }));
   await readingPause(page);
 
@@ -16,11 +17,9 @@ export async function stepRechercherEmployeurUrssaf(page) {
 
   await humanClick(page, page.getByLabel('Rechercher un employeur').getByRole('button', { name: 'Rechercher' }));
 
-  // Wait for search to complete
   await page.waitForLoadState('networkidle');
   await readingPause(page);
 
-  // Check whether a result was found or not
   const selectBtn = page.getByRole('button', { name: 'Sélectionner' });
   const noResults = page.getByText('Aucun résultat à afficher');
 
@@ -30,15 +29,19 @@ export async function stepRechercherEmployeurUrssaf(page) {
   ]);
 
   if (outcome === 'found') {
+    // Employeur found by URSSAF
     console.log('✅ Employeur trouvé par URSSAF, sélection en cours...');
     await humanClick(page, selectBtn);
     await humanClick(page, page.getByRole('button', { name: 'Continuer' }));
     await page.waitForLoadState('networkidle');
-
+    logStepResult('4c_rechercher_employeur_urssaf.js', 'success');
     console.log('✅ Step 4c complete');
+    return true; // signal success to 4b
 
   } else {
-    console.log('⚠️  Aucun employeur trouvé pour le N°Urssaf:', payload['4c_urssaf']);
-    throw new Error(`Aucun employeur trouvé pour le N°Urssaf: ${payload['4c_urssaf']}`);
+    // All search methods exhausted
+    console.log('❌ Aucun employeur trouvé pour le N°Urssaf:', payload['4c_urssaf']);
+    logStepResult('4c_rechercher_employeur_urssaf.js', 'error');
+    return false; // signal failure to 4b → 4a → runStep catches and logs 4a error
   }
 }
