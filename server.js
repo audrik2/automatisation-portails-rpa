@@ -4,9 +4,23 @@ import express from 'express';
 import { exec } from 'child_process';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
+import PQueue from 'p-queue';
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
+
+// ─────────────────────────────────────────────────────────────
+// File d'attente : un seul run Playwright a la fois.
+// Les requetes suivantes patientent ici et sont traitees en FIFO.
+// ─────────────────────────────────────────────────────────────
+const queue = new PQueue({ concurrency: 1 });
+
+// Pire cas mesure : 66s par run. On budgete 70s pour la marge.
+const RUN_BUDGET_SECONDS = 70;
+// Au-dela, on refuse en 503. 20 x 70s = ~23min d'attente pour le dernier arrive,
+// +66s pour son propre run = ~25min. Le `timeout` du noeud execute_playright
+// cote n8n doit donc etre au minimum a 1800000 (30 min).
+const MAX_WAITING = 20;
 
 // Required fields per sync_type
 const REQUIRED_FIELDS_BY_SYNC_TYPE = {
@@ -87,39 +101,28 @@ async function downloadFile(url, localPath) {
   writeFileSync(localPath, buffer);
 }
 
-// Health check endpoint — requires IP check + Authorization header
-app.get('/health', requireAllowedIP, requireAuth, (req, res) => {
-  res.json({ status: 'ok', service: 'playwright-automation' });
-});
+// ─────────────────────────────────────────────────────────────
+// exec() promisifie : c'est LA piece maitresse.
+// Sans ca, la fonction rendrait la main des le lancement du
+// process et la file se libererait avant la fin du run.
+// On resout toujours (jamais de rejet) pour recuperer stdout
+// meme en cas d'erreur.
+// ─────────────────────────────────────────────────────────────
+function execAutomation(env) {
+  return new Promise((resolve) => {
+    exec(
+      'node main.js',
+      { env, timeout: 120000, cwd: '/var/www/automatisation-portails-rpa' },
+      (err, stdout, stderr) => resolve({ err, stdout, stderr })
+    );
+  });
+}
 
-// Main endpoint — requires IP check + Authorization header
-app.post('/run', requireAllowedIP, requireAuth, async (req, res) => {
-  const payload = { ...req.body };
-  const syncType = payload['sync_type'];
-  console.log('Payload received — sync_type:', syncType);
-
-  // Validate sync_type is known
-  const requiredFields = REQUIRED_FIELDS_BY_SYNC_TYPE[syncType];
-  const documentFields = DOCUMENT_FIELDS_BY_SYNC_TYPE[syncType];
-  const finalStep = FINAL_STEP_BY_SYNC_TYPE[syncType];
-
-  if (!requiredFields) {
-    return res.status(400).json({
-      success: false,
-      error: `Unknown sync_type: ${syncType}`,
-    });
-  }
-
-  // Validate required fields for this sync_type
-  const missingFields = requiredFields.filter(f => !payload[f]);
-  if (missingFields.length > 0) {
-    return res.status(400).json({
-      success: false,
-      error: `Missing required fields for ${syncType}: ${missingFields.join(', ')}`,
-    });
-  }
-
-  // Create unique temp folder in /tmp (RAM)
+// ─────────────────────────────────────────────────────────────
+// Le travail serialise : telechargement des documents + run.
+// Ne touche jamais a `res` — retourne { httpStatus, body }.
+// ─────────────────────────────────────────────────────────────
+async function processRun(payload, documentFields, finalStep) {
   const runId = Date.now();
   const tempDir = `/tmp/playwright-run-${runId}`;
   mkdirSync(tempDir, { recursive: true });
@@ -146,28 +149,25 @@ app.post('/run', requireAllowedIP, requireAuth, async (req, res) => {
       PAYLOAD: JSON.stringify(payload),
     };
 
-    exec('node main.js', { env, timeout: 600000, cwd: '/var/www/automatisation-portails-rpa' }, (err, stdout, stderr) => {
+    const { err, stdout, stderr } = await execAutomation(env);
 
-      if (existsSync(tempDir)) {
-        rmSync(tempDir, { recursive: true });
-        console.log(`Temp folder deleted: ${tempDir}`);
-      }
+    if (stderr) console.error('stderr:', stderr);
 
-      if (stderr) console.error('stderr:', stderr);
+    // Parse step results from stdout
+    const stepResults = parseStepResults(stdout || '');
 
-      // Parse step results from stdout
-      const stepResults = parseStepResults(stdout || '');
+    // Last step that was executed
+    const lastStep = stepResults[stepResults.length - 1] || null;
 
-      // Last step that was executed
-      const lastStep = stepResults[stepResults.length - 1] || null;
+    // Overall success only if the final step of the branch completed with success
+    const finalStepResult = stepResults.filter(s => s.step === finalStep).pop();
+    const overallSuccess = finalStepResult?.status === 'success';
 
-      // Overall success only if the final step of the branch completed with success
-      const finalStepResult = stepResults.filter(s => s.step === finalStep).pop();
-      const overallSuccess = finalStepResult?.status === 'success';
-
-      if (err) {
-        console.error('Automation failed:', err.message);
-        return res.status(500).json({
+    if (err) {
+      console.error('Automation failed:', err.message);
+      return {
+        httpStatus: 500,
+        body: {
           success: false,
           // Output 1 — full step details
           steps: stepResults,
@@ -177,11 +177,14 @@ app.post('/run', requireAllowedIP, requireAuth, async (req, res) => {
           status_code: lastStep?.status_code || null,
           message: lastStep?.message || null,
           error: err.message,
-        });
-      }
+        },
+      };
+    }
 
-      console.log('Automation completed');
-      res.json({
+    console.log('Automation completed');
+    return {
+      httpStatus: 200,
+      body: {
         success: overallSuccess,
         // Output 1 — full step details
         steps: stepResults,
@@ -190,21 +193,98 @@ app.post('/run', requireAllowedIP, requireAuth, async (req, res) => {
         status: lastStep?.status || null,
         status_code: lastStep?.status_code || null,
         message: lastStep?.message || null,
-      });
+      },
+    };
+
+  } finally {
+    // Nettoyage garanti, succes comme echec
+    if (existsSync(tempDir)) {
+      rmSync(tempDir, { recursive: true, force: true });
+      console.log(`Temp folder deleted: ${tempDir}`);
+    }
+  }
+}
+
+// Health check endpoint — requires IP check + Authorization header
+app.get('/health', requireAllowedIP, requireAuth, (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'playwright-automation',
+    queue: { waiting: queue.size, running: queue.pending },
+  });
+});
+
+// Main endpoint — requires IP check + Authorization header
+app.post('/run', requireAllowedIP, requireAuth, async (req, res) => {
+  const payload = { ...req.body };
+  const syncType = payload['sync_type'];
+  console.log('Payload received — sync_type:', syncType);
+
+  // Validate sync_type is known
+  const requiredFields = REQUIRED_FIELDS_BY_SYNC_TYPE[syncType];
+  const documentFields = DOCUMENT_FIELDS_BY_SYNC_TYPE[syncType];
+  const finalStep = FINAL_STEP_BY_SYNC_TYPE[syncType];
+
+  // ── Validations hors file : rejet immediat, aucune place occupee ──
+  if (!requiredFields) {
+    return res.status(400).json({
+      success: false,
+      error: `Unknown sync_type: ${syncType}`,
     });
+  }
+
+  // Validate required fields for this sync_type
+  const missingFields = requiredFields.filter(f => !payload[f]);
+  if (missingFields.length > 0) {
+    return res.status(400).json({
+      success: false,
+      error: `Missing required fields for ${syncType}: ${missingFields.join(', ')}`,
+    });
+  }
+
+  // ── Garde-fou : refuser franchement plutot que faire attendre trop longtemps ──
+  if (queue.size >= MAX_WAITING) {
+    console.warn(`[queue] saturée (${queue.size} en attente) — rejet de ${syncType}`);
+    return res.status(503).json({
+      success: false,
+      error: `File saturée (${queue.size} en attente). Réessayer plus tard.`,
+      retry_after_seconds: queue.size * RUN_BUDGET_SECONDS,
+    });
+  }
+
+  // ── Mise en file ──
+  const position = queue.size + queue.pending;
+  if (position > 0) {
+    console.log(`[queue] ${syncType} mis en attente — ${position} devant lui`);
+  }
+
+  // Si n8n abandonne (timeout, coupure reseau), on le note.
+  let clientGone = false;
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      clientGone = true;
+      console.warn(`[queue] client deconnecte avant la fin — ${syncType}`);
+    }
+  });
+
+  try {
+    const result = await queue.add(() => processRun(payload, documentFields, finalStep));
+
+    if (clientGone) {
+      console.warn('[queue] run termine mais client deja parti, reponse ignoree');
+      return;
+    }
+    return res.status(result.httpStatus).json(result.body);
 
   } catch (err) {
-    if (existsSync(tempDir)) {
-      rmSync(tempDir, { recursive: true });
-      console.log(`Temp folder deleted after error: ${tempDir}`);
-    }
-
     console.error('Setup failed:', err.message);
-    res.status(500).json({ success: false, error: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Playwright service running on port ${PORT}`);
+  console.log(`Playwright service running on port ${PORT} — concurrency 1`);
 });
