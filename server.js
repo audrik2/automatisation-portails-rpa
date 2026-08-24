@@ -112,7 +112,7 @@ function execAutomation(env) {
   return new Promise((resolve) => {
     exec(
       'node main.js',
-      { env, timeout: 120000, cwd: '/var/www/automatisation-portails-rpa' },
+      { env, timeout: 300000, cwd: '/var/www/automatisation-portails-rpa' },
       (err, stdout, stderr) => resolve({ err, stdout, stderr })
     );
   });

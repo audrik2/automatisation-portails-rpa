@@ -98,6 +98,19 @@ async function runStep(name, fn) {
   } catch (err) {
     // On remonte le message reel : sans ca, tout echec est indiagnosticable
     console.error(`❌ ${name} — ${err.message}`);
+    console.error(`   URL au moment de l'échec : ${page.url()}`);
+
+    // Le catch externe ne se declenche jamais pour un step (l'erreur est
+    // absorbee ici), donc la capture doit se faire a cet endroit precis.
+    try {
+      mkdirSync('./screenshots', { recursive: true });
+      const shot = `./screenshots/${name.replace(/\.js$/, '')}-${Date.now()}.png`;
+      await page.screenshot({ path: shot, timeout: 5000, fullPage: true });
+      console.log(`📸 Screenshot saved to ${shot}`);
+    } catch (shotErr) {
+      console.warn('⚠️  Screenshot failed:', shotErr.message);
+    }
+
     logStepResult(name, 'error', err.message);
     return false;
   }
@@ -108,9 +121,14 @@ try {
     throw new Error('Missing sync_type in payload. Cannot determine which steps to run.');
   }
 
-  // 'networkidle' attend 500ms sans trafic reseau : instable sur une SPA.
-  // On attend l'element qui compte a la place.
   await page.goto(config.baseUrl, { waitUntil: 'domcontentloaded' });
+
+  // La SPA doit finir de s'hydrater avant qu'on teste quoi que ce soit.
+  // .catch() volontaire : si le reseau ne se calme jamais (polling, websocket),
+  // on continue quand meme au lieu de faire echouer tout le run.
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {
+    console.warn('⚠️  networkidle non atteint en 15s — on continue');
+  });
 
   const isLoggedIn = await page.getByRole('button', { name: 'Oceane' })
     .waitFor({ state: 'visible', timeout: 5000 })
