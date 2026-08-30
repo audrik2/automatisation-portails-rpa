@@ -27,6 +27,10 @@ const RUN_BUDGET_SECONDS = 70;
 // cote n8n doit donc etre au minimum a 1800000 (30 min).
 const MAX_WAITING = 20;
 
+// Message affiche a l'utilisateur quand le run echoue sans qu'aucune etape
+// n'ait pu etre loguee (crash au demarrage, timeout de exec, SIGTERM).
+const FALLBACK_ERROR_MESSAGE = 'Erreur : le traitement a échoué';
+
 // Required fields per sync_type
 const REQUIRED_FIELDS_BY_SYNC_TYPE = {
   inscrire_apprenant: [
@@ -94,6 +98,24 @@ function parseStepResults(stdout) {
       }
     })
     .filter(Boolean);
+}
+
+// ─────────────────────────────────────────────────────────────
+// Resume destine a n8n. Les etapes en repli (status 'skipped')
+// sont exclues du resume : leur echec est un cas nominal, elles
+// ne doivent jamais devenir le message utilisateur. Elles restent
+// visibles dans `steps` pour le diagnostic.
+// ─────────────────────────────────────────────────────────────
+function summarize(stepResults) {
+  const reportable = stepResults.filter(s => s.status !== 'skipped');
+  const lastStep = reportable[reportable.length - 1] || null;
+
+  return {
+    last_step: lastStep?.step || null,
+    status: lastStep?.status || 'error',
+    status_code: lastStep?.status_code || 400,
+    message: lastStep?.message || FALLBACK_ERROR_MESSAGE,
+  };
 }
 
 // Download a file from a URL and save it to a local path
@@ -182,8 +204,8 @@ async function processRun(payload, documentFields, finalStep) {
     // Parse step results from stdout
     const stepResults = parseStepResults(stdout || '');
 
-    // Last step that was executed
-    const lastStep = stepResults[stepResults.length - 1] || null;
+    // Output 2 — last step summary, avec repli si aucune etape n'a ete loguee
+    const summary = summarize(stepResults);
 
     // Overall success only if the final step of the branch completed with success
     const finalStepResult = stepResults.filter(s => s.step === finalStep).pop();
@@ -198,11 +220,9 @@ async function processRun(payload, documentFields, finalStep) {
           // Output 1 — full step details
           steps: stepResults,
           // Output 2 — last step summary
-          last_step: lastStep?.step || null,
-          status: lastStep?.status || null,
-          status_code: lastStep?.status_code || null,
-          message: lastStep?.message || null,
-          error: err.message,
+          ...summary,
+          // Trace technique : logs et support uniquement, pas d'affichage
+          debug: err.message,
         },
       };
     }
@@ -215,10 +235,7 @@ async function processRun(payload, documentFields, finalStep) {
         // Output 1 — full step details
         steps: stepResults,
         // Output 2 — last step summary
-        last_step: lastStep?.step || null,
-        status: lastStep?.status || null,
-        status_code: lastStep?.status_code || null,
-        message: lastStep?.message || null,
+        ...summary,
       },
     };
 

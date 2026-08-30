@@ -11,7 +11,7 @@ const SESSION_PATH = './session.json';
 // ─────────────────────────────────────────────────────────────
 // Session : lecture defensive + ecriture atomique.
 // Utile meme en sequentiel : si le process est tue en plein
-// storageState() (timeout de 600s cote server.js), le fichier
+// storageState() (timeout de 300s cote server.js), le fichier
 // reste tronque et TOUS les runs suivants planteraient au
 // demarrage, avant meme d'atteindre le premier step.
 // ─────────────────────────────────────────────────────────────
@@ -51,7 +51,7 @@ const browser = await chromium.launch({
 
 // ─────────────────────────────────────────────────────────────
 // Filet de securite : server.js tue ce process par SIGTERM au
-// bout de 120s (timeout de exec). Sans ce handler, le finally
+// bout de 300s (timeout de exec). Sans ce handler, le finally
 // plus bas ne s'executerait pas et Chromium resterait en RAM.
 // ─────────────────────────────────────────────────────────────
 for (const signal of ['SIGTERM', 'SIGINT']) {
@@ -120,16 +120,24 @@ await page.addInitScript(() => {
   Object.defineProperty(navigator, 'languages', { get: () => ['fr-FR', 'fr'] });
 });
 
-// Wrap each step — log predefined French message on success or failure
-async function runStep(name, fn) {
+// ─────────────────────────────────────────────────────────────
+// Wrap each step. Le message utilisateur vient TOUJOURS du
+// catalogue de router.js ; err.message part dans `debug`, lu
+// par les logs et le support, jamais affiche a l'utilisateur.
+//
+// silentFailure : etape appartenant a une chaine de repli
+// (4a, 4b). Son echec est un cas nominal — on le trace en
+// `skipped` sans remonter d'erreur.
+// ─────────────────────────────────────────────────────────────
+async function runStep(name, fn, { silentFailure = false } = {}) {
   try {
     await fn();
     logStepResult(name, 'success');
     return true;
   } catch (err) {
-    hasFailure = true;
+    if (!silentFailure) hasFailure = true;
     // On remonte le message reel : sans ca, tout echec est indiagnosticable
-    console.error(`❌ ${name} — ${err.message}`);
+    console.error(`${silentFailure ? '↪️ ' : '❌'} ${name} — ${err.message}`);
     console.error(`   URL au moment de l'échec : ${page.url()}`);
 
     // Le catch externe ne se declenche jamais pour un step (l'erreur est
@@ -143,7 +151,7 @@ async function runStep(name, fn) {
       console.warn('⚠️  Screenshot failed:', shotErr.message);
     }
 
-    logStepResult(name, 'error', err.message);
+    logStepResult(name, silentFailure ? 'skipped' : 'error', err.message);
     return false;
   }
 }
@@ -177,8 +185,11 @@ try {
     }
     await saveSession(context);
   } else {
+    // Le detail "session reutilisee" reste dans les logs. Le message
+    // utilisateur vient du catalogue, comme pour un login reel : du point
+    // de vue de l'utilisateur, la connexion a IPERIA a reussi.
     console.log('♻️  Session réutilisée');
-    logStepResult('1_connection.js', 'success', 'Succès : session réutilisée');
+    logStepResult('1_connection.js', 'success');
   }
 
   await runSteps(page, payload['sync_type'], runStep);
