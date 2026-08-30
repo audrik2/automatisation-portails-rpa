@@ -4,3 +4,4 @@ session.json
 screenshots/
 node_modules/
 payload.json
+traces/

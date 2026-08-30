@@ -83,6 +83,37 @@ const context = await browser.newContext({
 const page = await context.newPage();
 page.setDefaultTimeout(config.timeout);
 
+// ─────────────────────────────────────────────────────────────
+// Trace Playwright : rejouable a posteriori avec
+//   npx playwright show-trace trace-XXX.zip
+// On enregistre toujours, mais on ne conserve le fichier qu'en
+// cas d'echec (voir le finally) pour ne pas saturer le disque.
+// ─────────────────────────────────────────────────────────────
+await context.tracing.start({ screenshots: true, snapshots: true, sources: true });
+
+let hasFailure = false;
+
+// Erreurs JS de la page (souvent la vraie cause derriere un CLIENT_ERROR)
+page.on('pageerror', (err) => console.error(`💥 JS page error : ${err.message}`));
+page.on('console', (msg) => {
+  if (msg.type() === 'error') console.error(`🖥️  console.error : ${msg.text()}`);
+});
+
+// ─────────────────────────────────────────────────────────────
+// Diagnostic : le portail affiche "CLIENT_ERROR" sans detail.
+// On intercepte la reponse HTTP reelle derriere ce message.
+// ─────────────────────────────────────────────────────────────
+page.on('response', async (response) => {
+  const status = response.status();
+  if (status < 400) return;
+  const url = response.url();
+  if (!/\/api\/|\/rest\/|upload|document/i.test(url)) return;
+  let body = '';
+  try { body = (await response.text()).slice(0, 400); } catch {}
+  console.error(`🌐 HTTP ${status} — ${response.request().method()} ${url}`);
+  if (body) console.error(`   ↳ ${body}`);
+});
+
 await page.addInitScript(() => {
   Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
@@ -96,6 +127,7 @@ async function runStep(name, fn) {
     logStepResult(name, 'success');
     return true;
   } catch (err) {
+    hasFailure = true;
     // On remonte le message reel : sans ca, tout echec est indiagnosticable
     console.error(`❌ ${name} — ${err.message}`);
     console.error(`   URL au moment de l'échec : ${page.url()}`);
@@ -152,6 +184,7 @@ try {
   await runSteps(page, payload['sync_type'], runStep);
 
 } catch (err) {
+  hasFailure = true;
   try {
     mkdirSync('./screenshots', { recursive: true });
     const shot = `./screenshots/error-${Date.now()}.png`;
@@ -164,5 +197,18 @@ try {
   console.error('   URL au moment de l\'échec :', page.url());
 
 } finally {
+  try {
+    if (hasFailure || process.env.TRACE === 'always') {
+      mkdirSync('./traces', { recursive: true });
+      const tracePath = `./traces/trace-${payload['sync_type'] || 'run'}-${Date.now()}.zip`;
+      await context.tracing.stop({ path: tracePath });
+      console.log(`🧭 Trace enregistrée : ${tracePath}`);
+      console.log('   → npx playwright show-trace <fichier> pour la rejouer');
+    } else {
+      await context.tracing.stop(); // succes : rien a conserver
+    }
+  } catch (traceErr) {
+    console.warn('⚠️  Trace non enregistrée :', traceErr.message);
+  }
   await browser.close();
 }

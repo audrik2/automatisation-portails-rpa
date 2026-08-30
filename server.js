@@ -3,8 +3,13 @@ import 'dotenv/config';
 import express from 'express';
 import { exec } from 'child_process';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
-import { join } from 'path';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import PQueue from 'p-queue';
+
+// Dossier du projet : deduit de l'emplacement de ce fichier, donc valable
+// en local comme en prod. APP_DIR permet de forcer une autre valeur.
+const PROJECT_DIR = process.env.APP_DIR || dirname(fileURLToPath(import.meta.url));
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -99,6 +104,27 @@ async function downloadFile(url, localPath) {
   }
   const buffer = Buffer.from(await response.arrayBuffer());
   writeFileSync(localPath, buffer);
+
+  // ── Diagnostic : le portail Iperia refuse en CLIENT_ERROR les fichiers
+  // qui ne correspondent pas a leur extension, sont vides, ou depassent 10 Mo.
+  // On verifie les octets magiques plutot que de faire confiance au nom.
+  const head = buffer.subarray(0, 4);
+  let realType = 'inconnu';
+  if (head.toString('latin1', 0, 4) === '%PDF') realType = 'pdf';
+  else if (head[0] === 0xff && head[1] === 0xd8) realType = 'jpeg';
+  else if (head[0] === 0x89 && head.toString('latin1', 1, 4) === 'PNG') realType = 'png';
+  else if (buffer.subarray(0, 200).toString('utf8').trim().match(/^[<{]/)) realType = 'HTML/JSON (!)';
+
+  const sizeMB = (buffer.length / 1024 / 1024).toFixed(2);
+  const ext = localPath.split('.').pop().toLowerCase();
+  const mismatch = (ext === 'pdf' && realType !== 'pdf')
+    || (['jpg', 'jpeg'].includes(ext) && realType !== 'jpeg')
+    || (ext === 'png' && realType !== 'png');
+
+  console.log(`   ↳ ${sizeMB} Mo — contenu réel : ${realType} — extension : .${ext}` +
+    (mismatch ? '  ⚠️  INCOHÉRENT' : '') +
+    (buffer.length > 10 * 1024 * 1024 ? '  ⚠️  > 10 Mo (refusé par Iperia)' : '') +
+    (buffer.length === 0 ? '  ⚠️  FICHIER VIDE' : ''));
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -112,7 +138,7 @@ function execAutomation(env) {
   return new Promise((resolve) => {
     exec(
       'node main.js',
-      { env, timeout: 300000, cwd: '/var/www/automatisation-portails-rpa' },
+      { env, timeout: 300000, cwd: PROJECT_DIR },
       (err, stdout, stderr) => resolve({ err, stdout, stderr })
     );
   });
@@ -268,7 +294,18 @@ app.post('/run', requireAllowedIP, requireAuth, async (req, res) => {
   });
 
   try {
-    const result = await queue.add(() => processRun(payload, documentFields, finalStep));
+    const result = await queue.add(async () => {
+      // Le client a abandonne pendant l'attente : inutile de traiter.
+      // Sinon le dossier serait modifie dans Iperia alors que n8n a deja
+      // renvoye une erreur — incoherence et risque de double traitement.
+      if (clientGone) {
+        console.warn(`[queue] ${syncType} abandonné avant exécution — run annulé`);
+        return null;
+      }
+      return processRun(payload, documentFields, finalStep);
+    });
+
+    if (result === null) return;
 
     if (clientGone) {
       console.warn('[queue] run termine mais client deja parti, reponse ignoree');
