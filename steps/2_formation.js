@@ -6,8 +6,21 @@ export async function stepFormation(page) {
   const payload = getPayload();
   console.log('Step 2: Navigation vers la formation:', payload['2_num_action']);
 
+  // Fermer la popup de notification si elle est affichee
+  const closeNotification = page.getByRole('button', { name: 'Fermer la notification' });
+  const notificationVisible = await closeNotification
+    .waitFor({ state: 'visible', timeout: 3000 })
+    .then(() => true)
+    .catch(() => false);
+
+  if (notificationVisible) {
+    console.log('Notification detectee — fermeture');
+    await humanClick(page, closeNotification);
+    await readingPause(page);
+  }
+
   // Open side menu and navigate to Formations
-  await humanClick(page, page.getByRole('button').filter({ hasText: /^$/ }));
+  await humanClick(page, page.getByRole('button', { name: 'Ouvrir le menu' }));
   await humanClick(page, page.getByText('Formations', { exact: true }));
   await page.waitForLoadState('networkidle');
   await readingPause(page);

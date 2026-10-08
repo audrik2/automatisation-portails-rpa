@@ -34,7 +34,8 @@ const FALLBACK_ERROR_MESSAGE = 'Erreur : le traitement a échoué';
 // Required fields per sync_type
 const REQUIRED_FIELDS_BY_SYNC_TYPE = {
   inscrire_apprenant: [
-    'sync_type', '2_num_action', '3_branche', '3_first_name', '3_last_name', '3a_birth_year',
+    'sync_type', '2_num_action', '3_branche', '3_first_name', '3_last_name', 
+    '3a_birth_year', '5_rib_titulaire', '5_rib_iban' , '5_rib_bic'  
   ],
   documents_inscription: [
     'sync_type', '2_num_action', '3_civility', '3_first_name', '3_last_name',
